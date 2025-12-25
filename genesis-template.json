@@ -34,9 +34,9 @@
     }
   },
   "nonce": "0x0",
-  "timestamp": "0x5e9da7ce",
+  "timestamp": "0x688469b8",
   "extraData": "{{extraData}}",
-  "gasLimit": "0x2625a00",
+  "gasLimit": "0x55d4a80",
   "difficulty": "0x1",
   "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "coinbase": "0xffffFFFfFFffffffffffffffFfFFFfffFFFfFFfE",
@@ -112,11 +112,11 @@
       "balance": "0x0",
       "code": "{{tokenRecoverPortal}}"
     },
-    "0x88cb4D8F77742c24d647BEf8049D3f3C56067cDD": {
-      "balance": "0x100000000000000000000"
+    "0x413dF5c1e23768Ab90e5790411dDcafDc2A1Fc3b": {
+      "balance": "0x152d02c7e14af6000000"
     },
-    "0x42D596440775C90db8d9187b47650986E1063493": {
-      "balance": "0x1000000000000000000000"
+    "0x613C023F95f8DDB694AE43Ea989E9C82c0325D3A": {
+      "balance": "0xd3c21bcecceda0000000"
     }{% for v in initHolders %},
     "{{ v.address.replace('0x', '') }}": {
       "balance": "0x{{ v.balance }}"

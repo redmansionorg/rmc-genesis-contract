@@ -1,16 +1,16 @@
 const web3 = require('web3');
 const init_holders = [
   {
-     address: '0x37B8516a0F88E65D677229b402ec6C1e0E333004',
-     balance: BigInt('500000000000000000000').toString(16) // 500e18
+     address: '0x2c1B2007754730e36D207684f1D4CAEC6d799000',
+     balance: BigInt('500000000000000000000000000').toString(16) // 500000000e18
   },
   {
-     address: '0x6c468CF8c9879006E22EC4029696E005C2319C9D',
-     balance: BigInt('500000000000000000000').toString(16) // 500e18
+     address: '0x4753aC4c5A2Cb17Db70e638680f424A140A91998',
+     balance: BigInt('500000000000000000000000000').toString(16) // 500000000e18
   },
   {% for initHolder in initHolders %}{
      address: '{{initHolder }}',
-     balance: BigInt('500000000000000000000000000').toString(16) // 500000000e18
+     balance: BigInt('30101000000000000000000').toString(16) // 30101e18
   },{% endfor %}
 ];
 
