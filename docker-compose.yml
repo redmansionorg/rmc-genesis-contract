@@ -1,0 +1,110 @@
+services:
+  # Build and compile contracts
+  foundry:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - foundry-cache:/app/cache
+      - foundry-out:/app/out
+      - node-modules:/app/node_modules
+      - forge-std:/app/lib
+    working_dir: /app
+    command: sh -c "forge install foundry-rs/forge-std 2>/dev/null || true && forge build"
+
+  # Run all tests
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - foundry-cache:/app/cache
+      - foundry-out:/app/out
+      - node-modules:/app/node_modules
+      - forge-std:/app/lib
+    working_dir: /app
+    command: sh -c "forge install foundry-rs/forge-std 2>/dev/null || true && forge test -vvv"
+
+  # Run OTS tests only (uses ots profile)
+  test-ots:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - foundry-cache:/app/cache
+      - foundry-out:/app/out
+      - node-modules:/app/node_modules
+      - forge-std:/app/lib
+    working_dir: /app
+    environment:
+      - FOUNDRY_PROFILE=ots
+    command: sh -c "forge install foundry-rs/forge-std 2>/dev/null || true && forge test -vvv"
+
+  # Generate OTS genesis
+  generate-ots:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - foundry-cache:/app/cache
+      - foundry-out:/app/out
+      - node-modules:/app/node_modules
+      - forge-std:/app/lib
+    working_dir: /app
+    environment:
+      - FOUNDRY_PROFILE=ots
+    command: sh -c "forge install foundry-rs/forge-std 2>/dev/null || true && forge build && node scripts/generate-ots.js"
+
+  # Generate full genesis (mainnet)
+  generate-mainnet:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - foundry-cache:/app/cache
+      - foundry-out:/app/out
+      - node-modules:/app/node_modules
+      - forge-std:/app/lib
+    working_dir: /app
+    command: sh -c "pip3 install --break-system-packages typer jinja2 web3 && forge install foundry-rs/forge-std 2>/dev/null || true && python3 -m scripts.generate mainnet"
+
+  # Generate full genesis (dev)
+  generate-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - foundry-cache:/app/cache
+      - foundry-out:/app/out
+      - node-modules:/app/node_modules
+      - forge-std:/app/lib
+    working_dir: /app
+    command: sh -c "pip3 install --break-system-packages typer jinja2 web3 && forge install foundry-rs/forge-std 2>/dev/null || true && python3 -m scripts.generate dev"
+
+  # Interactive shell
+  shell:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - foundry-cache:/app/cache
+      - foundry-out:/app/out
+      - node-modules:/app/node_modules
+      - forge-std:/app/lib
+    working_dir: /app
+    stdin_open: true
+    tty: true
+    command: /bin/sh
+
+volumes:
+  foundry-cache:
+  foundry-out:
+  node-modules:
+  forge-std:

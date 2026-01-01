@@ -1,0 +1,13 @@
+{
+  "comment": "OTS contracts genesis allocation - merge into main genesis.json alloc section",
+  "alloc": {
+    "0x0000000000000000000000000000000000009000": {
+      "balance": "0x0",
+      "code": "{{copyrightRegistry}}"
+    },
+    "0x0000000000000000000000000000000000009001": {
+      "balance": "0x0",
+      "code": "{{otsAnchor}}"
+    }
+  }
+}
