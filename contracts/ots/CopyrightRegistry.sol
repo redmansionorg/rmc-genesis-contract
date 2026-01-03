@@ -3,8 +3,9 @@ pragma solidity ^0.8.17;
 
 /**
  * @title CopyrightRegistry
- * @notice Copyright registration contract - Users submit content hash for copyright claims
- * @dev Works with OTSAnchor contract for Bitcoin timestamp anchoring
+ * @notice Copyright registration contract - Users register copyright claims with RUID
+ * @dev Minimal on-chain state design. Use events + RPC for indexing/queries.
+ *      RUID = keccak256(puid, auid, claimant, blockNumber) computed off-chain
  * @custom:address 0x0000000000000000000000000000000000009000
  */
 contract CopyrightRegistry {
@@ -12,42 +13,24 @@ contract CopyrightRegistry {
 
     address public constant OTS_ANCHOR_ADDR = 0x0000000000000000000000000000000000009001;
 
-    // ============ Enums ============
-
-    enum AnchorStatus {
-        Pending,      // Waiting for anchoring
-        Anchoring,    // Anchoring in progress (submitted to Bitcoin)
-        Confirmed,    // Confirmed (Bitcoin confirmed)
-        Failed        // Anchoring failed
-    }
-
     // ============ Structs ============
 
     struct Copyright {
-        bytes32 contentHash;      // Content hash (SHA-256)
-        address owner;            // Copyright owner
-        string title;             // Work title
-        string author;            // Author name
-        uint256 registeredAt;     // Registration timestamp (block time)
-        uint256 registeredBlock;  // Registration block number
-        AnchorStatus status;      // OTS anchoring status
-        bytes32 otsProofHash;     // OTS proof hash (filled after anchoring)
-        uint256 btcBlockHeight;   // Bitcoin block height (filled after anchoring)
+        bytes32 ruid;             // Registration Unique ID (primary key)
+        bytes32 puid;             // Product Unique ID
+        bytes32 auid;             // Asset Unique ID
+        address claimant;         // Copyright claimant
+        uint64 registeredBlock;   // Registration block number
+        uint64 registeredAt;      // Registration timestamp
+        bytes32 batchRoot;        // OTS batch root (filled after anchoring)
+        uint64 btcBlockHeight;    // Bitcoin block height (filled after anchoring)
+        uint64 btcTimestamp;      // Bitcoin block timestamp (filled after anchoring)
     }
 
     // ============ State Variables ============
 
-    /// @notice Copyright records mapping: contentHash => Copyright
+    /// @notice Copyright records mapping: ruid => Copyright
     mapping(bytes32 => Copyright) public copyrights;
-
-    /// @notice All registered content hashes
-    bytes32[] public registeredHashes;
-
-    /// @notice Copyrights owned by user: owner => contentHash[]
-    mapping(address => bytes32[]) public ownerCopyrights;
-
-    /// @notice Pending anchor queue (waiting for OTS processing)
-    bytes32[] public pendingAnchors;
 
     /// @notice Contract admin
     address public admin;
@@ -57,22 +40,20 @@ contract CopyrightRegistry {
 
     // ============ Events ============
 
-    /// @notice Copyright registration event
+    /// @notice Copyright claim event - indexed for off-chain querying
     event CopyrightClaimed(
-        bytes32 indexed contentHash,
-        address indexed owner,
-        string title,
-        string author,
-        uint256 registeredAt,
-        uint256 registeredBlock
+        bytes32 indexed ruid,
+        bytes32 indexed puid,
+        bytes32 indexed auid,
+        address claimant
     );
 
-    /// @notice OTS anchor status update event
-    event AnchorStatusUpdated(
-        bytes32 indexed contentHash,
-        AnchorStatus status,
-        bytes32 otsProofHash,
-        uint256 btcBlockHeight
+    /// @notice OTS status update event - batch level update
+    event OtsStatusUpdated(
+        bytes32 indexed ruid,
+        bytes32 batchRoot,
+        uint64 btcBlockHeight,
+        uint64 btcTimestamp
     );
 
     // ============ Errors ============
@@ -81,9 +62,9 @@ contract CopyrightRegistry {
     error NotInitialized();
     error OnlyAdmin();
     error OnlyOTSAnchor();
-    error InvalidContentHash();
-    error TitleRequired();
-    error AuthorRequired();
+    error InvalidRUID();
+    error InvalidPUID();
+    error InvalidAUID();
     error AlreadyRegistered();
     error NotRegistered();
 
@@ -120,69 +101,63 @@ contract CopyrightRegistry {
 
     /**
      * @notice Register a copyright claim
-     * @param contentHash SHA-256 hash of the content
-     * @param title Work title
-     * @param author Author name
+     * @dev RUID must be pre-computed: keccak256(abi.encodePacked(puid, auid, msg.sender, block.number))
+     * @param ruid Registration Unique ID (pre-computed)
+     * @param puid Product Unique ID
+     * @param auid Asset Unique ID
      */
-    function claimCopyright(
-        bytes32 contentHash,
-        string calldata title,
-        string calldata author
+    function registerClaim(
+        bytes32 ruid,
+        bytes32 puid,
+        bytes32 auid
     ) external onlyInit {
-        if (contentHash == bytes32(0)) revert InvalidContentHash();
-        if (bytes(title).length == 0) revert TitleRequired();
-        if (bytes(author).length == 0) revert AuthorRequired();
-        if (copyrights[contentHash].registeredAt != 0) revert AlreadyRegistered();
+        if (ruid == bytes32(0)) revert InvalidRUID();
+        if (puid == bytes32(0)) revert InvalidPUID();
+        if (auid == bytes32(0)) revert InvalidAUID();
+        if (copyrights[ruid].registeredAt != 0) revert AlreadyRegistered();
 
-        Copyright storage c = copyrights[contentHash];
-        c.contentHash = contentHash;
-        c.owner = msg.sender;
-        c.title = title;
-        c.author = author;
-        c.registeredAt = block.timestamp;
-        c.registeredBlock = block.number;
-        c.status = AnchorStatus.Pending;
+        // Verify RUID computation
+        bytes32 expectedRuid = keccak256(abi.encodePacked(puid, auid, msg.sender, block.number));
+        if (ruid != expectedRuid) revert InvalidRUID();
 
-        registeredHashes.push(contentHash);
-        ownerCopyrights[msg.sender].push(contentHash);
-        pendingAnchors.push(contentHash);
+        Copyright storage c = copyrights[ruid];
+        c.ruid = ruid;
+        c.puid = puid;
+        c.auid = auid;
+        c.claimant = msg.sender;
+        c.registeredBlock = uint64(block.number);
+        c.registeredAt = uint64(block.timestamp);
 
-        emit CopyrightClaimed(
-            contentHash,
-            msg.sender,
-            title,
-            author,
-            block.timestamp,
-            block.number
-        );
+        emit CopyrightClaimed(ruid, puid, auid, msg.sender);
     }
 
     /**
-     * @notice Update OTS anchor status (only callable by OTSAnchor contract)
-     * @param contentHash Content hash
-     * @param status New status
-     * @param otsProofHash OTS proof hash
+     * @notice Batch update OTS status for multiple RUIDs (only callable by OTSAnchor)
+     * @dev Called once per batch when BTC confirmation is received
+     * @param ruids Array of RUIDs to update
+     * @param batchRoot Merkle root of the batch
      * @param btcBlockHeight Bitcoin block height
+     * @param btcTimestamp Bitcoin block timestamp
      */
-    function updateAnchorStatus(
-        bytes32 contentHash,
-        AnchorStatus status,
-        bytes32 otsProofHash,
-        uint256 btcBlockHeight
+    function updateOtsStatus(
+        bytes32[] calldata ruids,
+        bytes32 batchRoot,
+        uint64 btcBlockHeight,
+        uint64 btcTimestamp
     ) external onlyOTSAnchor {
-        if (copyrights[contentHash].registeredAt == 0) revert NotRegistered();
+        for (uint256 i = 0; i < ruids.length; i++) {
+            bytes32 ruid = ruids[i];
+            Copyright storage c = copyrights[ruid];
 
-        Copyright storage c = copyrights[contentHash];
-        c.status = status;
-        c.otsProofHash = otsProofHash;
-        c.btcBlockHeight = btcBlockHeight;
+            // Skip if not registered (defensive, shouldn't happen)
+            if (c.registeredAt == 0) continue;
 
-        // Remove from pending queue if confirmed or failed
-        if (status == AnchorStatus.Confirmed || status == AnchorStatus.Failed) {
-            _removeFromPending(contentHash);
+            c.batchRoot = batchRoot;
+            c.btcBlockHeight = btcBlockHeight;
+            c.btcTimestamp = btcTimestamp;
+
+            emit OtsStatusUpdated(ruid, batchRoot, btcBlockHeight, btcTimestamp);
         }
-
-        emit AnchorStatusUpdated(contentHash, status, otsProofHash, btcBlockHeight);
     }
 
     /**
@@ -197,70 +172,47 @@ contract CopyrightRegistry {
     // ============ View Functions ============
 
     /**
-     * @notice Get copyright details
-     * @param contentHash Content hash
+     * @notice Get copyright details by RUID
+     * @param ruid Registration Unique ID
      * @return Copyright struct
      */
-    function getCopyright(bytes32 contentHash) external view returns (Copyright memory) {
-        return copyrights[contentHash];
+    function getCopyright(bytes32 ruid) external view returns (Copyright memory) {
+        return copyrights[ruid];
     }
 
     /**
-     * @notice Check if content is registered
-     * @param contentHash Content hash
+     * @notice Check if RUID is registered
+     * @param ruid Registration Unique ID
      * @return bool Whether registered
      */
-    function isRegistered(bytes32 contentHash) external view returns (bool) {
-        return copyrights[contentHash].registeredAt != 0;
+    function isRegistered(bytes32 ruid) external view returns (bool) {
+        return copyrights[ruid].registeredAt != 0;
     }
 
     /**
-     * @notice Get all copyrights by owner
-     * @param owner User address
-     * @return bytes32[] Content hash array
+     * @notice Check if RUID has been anchored to Bitcoin
+     * @param ruid Registration Unique ID
+     * @return bool Whether anchored
      */
-    function getCopyrightsByOwner(address owner) external view returns (bytes32[] memory) {
-        return ownerCopyrights[owner];
+    function isAnchored(bytes32 ruid) external view returns (bool) {
+        return copyrights[ruid].btcBlockHeight != 0;
     }
 
     /**
-     * @notice Get pending anchor queue
-     * @return bytes32[] Pending content hash array
+     * @notice Compute RUID for given parameters
+     * @dev Helper for clients to compute RUID before calling registerClaim
+     * @param puid Product Unique ID
+     * @param auid Asset Unique ID
+     * @param claimant Claimant address
+     * @param blockNumber Block number
+     * @return bytes32 Computed RUID
      */
-    function getPendingAnchors() external view returns (bytes32[] memory) {
-        return pendingAnchors;
-    }
-
-    /**
-     * @notice Get pending count
-     * @return uint256 Pending count
-     */
-    function getPendingCount() external view returns (uint256) {
-        return pendingAnchors.length;
-    }
-
-    /**
-     * @notice Get total registered count
-     * @return uint256 Total count
-     */
-    function getTotalRegistered() external view returns (uint256) {
-        return registeredHashes.length;
-    }
-
-    // ============ Internal Functions ============
-
-    /**
-     * @dev Remove hash from pending queue
-     * @param contentHash Hash to remove
-     */
-    function _removeFromPending(bytes32 contentHash) internal {
-        uint256 len = pendingAnchors.length;
-        for (uint256 i = 0; i < len; i++) {
-            if (pendingAnchors[i] == contentHash) {
-                pendingAnchors[i] = pendingAnchors[len - 1];
-                pendingAnchors.pop();
-                break;
-            }
-        }
+    function computeRUID(
+        bytes32 puid,
+        bytes32 auid,
+        address claimant,
+        uint256 blockNumber
+    ) external pure returns (bytes32) {
+        return keccak256(abi.encodePacked(puid, auid, claimant, blockNumber));
     }
 }

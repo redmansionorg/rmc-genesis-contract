@@ -5,14 +5,15 @@ import "./CopyrightRegistry.sol";
 
 /**
  * @title OTSAnchor
- * @notice OTS anchoring system contract - Receives system calls from OTS module
- * @dev Only allows validators (coinbase) to call via gasPrice=0 system transactions
+ * @notice OTS anchoring system contract - Receives system transactions from OTS module
+ * @dev Only allows coinbase (block producer) with gasPrice=0 system transactions
+ *      NO per-RUID loops in this contract - all updates delegated to CopyrightRegistry
  * @custom:address 0x0000000000000000000000000000000000009001
  *
  * System call flow:
  * 1. OTS module builds system transaction in FinalizeHook
- * 2. Validator executes updateOtsStatus with gasPrice=0
- * 3. This contract updates status and notifies CopyrightRegistry
+ * 2. Block producer executes updateOtsStatus with gasPrice=0
+ * 3. This contract records batch and forwards RUID updates to CopyrightRegistry
  */
 contract OTSAnchor {
     // ============ Constants ============
@@ -21,58 +22,44 @@ contract OTSAnchor {
 
     // ============ Structs ============
 
-    struct AnchorRecord {
-        bytes32 merkleRoot;       // Merkle root of all copyright hashes for the day
-        uint256 anchorBlock;      // RMC anchor block number
-        uint256 anchorTime;       // RMC anchor timestamp
-        uint256 btcBlockHeight;   // Bitcoin block height
-        bytes32 btcTxHash;        // Bitcoin transaction hash
-        bytes otsProof;           // OTS proof data (optional storage)
-        bool confirmed;           // Whether confirmed
+    struct BatchRecord {
+        bytes32 batchRoot;        // Merkle root of all RUIDs in the batch
+        uint64 startBlock;        // First RMC block in batch (inclusive)
+        uint64 endBlock;          // Last RMC block in batch (inclusive)
+        uint64 anchorBlock;       // RMC block where anchored
+        uint64 anchorTime;        // RMC timestamp when anchored
+        uint64 btcBlockHeight;    // Bitcoin block height
+        uint64 btcTimestamp;      // Bitcoin block timestamp (OTS timestamp)
+        uint32 ruidCount;         // Number of RUIDs in batch
     }
 
     // ============ State Variables ============
 
-    /// @notice Anchor records: merkleRoot => AnchorRecord
-    mapping(bytes32 => AnchorRecord) public anchorRecords;
+    /// @notice Batch records: batchRoot => BatchRecord
+    mapping(bytes32 => BatchRecord) public batchRecords;
 
-    /// @notice Daily anchors: date (YYYYMMDD) => merkleRoot
-    mapping(uint256 => bytes32) public dailyAnchors;
+    /// @notice EndBlock to batchRoot mapping for lookup
+    mapping(uint64 => bytes32) public endBlockToBatch;
 
-    /// @notice All merkle roots list
-    bytes32[] public allMerkleRoots;
+    /// @notice All batch roots list (for iteration if needed)
+    bytes32[] public allBatchRoots;
 
-    /// @notice Contract admin
+    /// @notice Contract admin (for emergency only)
     address public admin;
-
-    /// @notice Allowed system callers (usually validators)
-    mapping(address => bool) public systemCallers;
 
     /// @notice Initialization flag
     bool public initialized;
 
     // ============ Events ============
 
-    /// @notice New anchor submission event
-    event AnchorSubmitted(
-        bytes32 indexed merkleRoot,
-        uint256 indexed date,
-        uint256 anchorBlock,
-        bytes32[] contentHashes
-    );
-
-    /// @notice Anchor confirmation event (after Bitcoin confirmation)
-    event AnchorConfirmed(
-        bytes32 indexed merkleRoot,
-        uint256 btcBlockHeight,
-        bytes32 btcTxHash
-    );
-
-    /// @notice Single copyright status update event
-    event CopyrightStatusUpdated(
-        bytes32 indexed contentHash,
-        bytes32 indexed merkleRoot,
-        CopyrightRegistry.AnchorStatus status
+    /// @notice Batch anchored event - emitted when BTC confirmation is written
+    event BatchAnchored(
+        bytes32 indexed batchRoot,
+        uint64 indexed endBlock,
+        uint64 startBlock,
+        uint64 btcBlockHeight,
+        uint64 btcTimestamp,
+        uint32 ruidCount
     );
 
     // ============ Errors ============
@@ -81,11 +68,10 @@ contract OTSAnchor {
     error NotInitialized();
     error OnlyAdmin();
     error NotSystemCall();
-    error InvalidMerkleRoot();
-    error DateAlreadyAnchored();
-    error NoContentHashes();
-    error AnchorNotFound();
-    error AlreadyConfirmed();
+    error InvalidBatchRoot();
+    error InvalidBlockRange();
+    error BatchAlreadyAnchored();
+    error EmptyRUIDs();
 
     // ============ Modifiers ============
 
@@ -94,11 +80,14 @@ contract OTSAnchor {
         _;
     }
 
+    /**
+     * @notice System call modifier - strictly gasPrice=0 && coinbase
+     * @dev In consensus, only block producers can inject system txs with gasPrice=0
+     *      msg.sender == block.coinbase ensures this is the block producer
+     */
     modifier onlySystem() {
-        // System call check: gasPrice == 0 or in allowed list
-        if (tx.gasprice != 0 && !systemCallers[msg.sender] && msg.sender != admin) {
-            revert NotSystemCall();
-        }
+        if (tx.gasprice != 0) revert NotSystemCall();
+        if (msg.sender != block.coinbase) revert NotSystemCall();
         _;
     }
 
@@ -111,7 +100,7 @@ contract OTSAnchor {
 
     /**
      * @notice Initialize the contract (called once at genesis)
-     * @param _admin Admin address
+     * @param _admin Admin address (for emergency only)
      */
     function init(address _admin) external {
         if (initialized) revert AlreadyInitialized();
@@ -122,144 +111,56 @@ contract OTSAnchor {
     // ============ System Functions (Called by OTS Module) ============
 
     /**
-     * @notice Submit new OTS anchor (OTS module system call)
-     * @dev Called by validator at daily trigger time, packing all pending copyrights
-     * @param merkleRoot Merkle root of all pending content hashes
-     * @param date Date in YYYYMMDD format
-     * @param contentHashes Content hash list included
+     * @notice Update OTS status for a batch (system transaction from block producer)
+     * @dev Called via FinalizeHook when BTC confirmation is received
+     *      Matches Go signature: updateOtsStatus(bytes32[],bytes32,uint64,uint64,uint64)
+     * @param ruids Array of RUIDs in the batch (sorted by SortKey)
+     * @param batchRoot Merkle root of the batch
+     * @param otsTimestamp Bitcoin block timestamp (OTS timestamp)
+     * @param startBlock First RMC block in batch
+     * @param endBlock Last RMC block in batch
      */
-    function submitAnchor(
-        bytes32 merkleRoot,
-        uint256 date,
-        bytes32[] calldata contentHashes
+    function updateOtsStatus(
+        bytes32[] calldata ruids,
+        bytes32 batchRoot,
+        uint64 otsTimestamp,
+        uint64 startBlock,
+        uint64 endBlock
     ) external onlySystem onlyInit {
-        if (merkleRoot == bytes32(0)) revert InvalidMerkleRoot();
-        if (dailyAnchors[date] != bytes32(0)) revert DateAlreadyAnchored();
-        if (contentHashes.length == 0) revert NoContentHashes();
+        if (batchRoot == bytes32(0)) revert InvalidBatchRoot();
+        if (startBlock > endBlock) revert InvalidBlockRange();
+        if (ruids.length == 0) revert EmptyRUIDs();
+        if (batchRecords[batchRoot].anchorBlock != 0) revert BatchAlreadyAnchored();
 
-        // Record anchor
-        AnchorRecord storage record = anchorRecords[merkleRoot];
-        record.merkleRoot = merkleRoot;
-        record.anchorBlock = block.number;
-        record.anchorTime = block.timestamp;
-        record.confirmed = false;
+        // Record batch
+        BatchRecord storage record = batchRecords[batchRoot];
+        record.batchRoot = batchRoot;
+        record.startBlock = startBlock;
+        record.endBlock = endBlock;
+        record.anchorBlock = uint64(block.number);
+        record.anchorTime = uint64(block.timestamp);
+        record.btcBlockHeight = 0; // Will be filled from otsTimestamp lookup if needed
+        record.btcTimestamp = otsTimestamp;
+        record.ruidCount = uint32(ruids.length);
 
-        dailyAnchors[date] = merkleRoot;
-        allMerkleRoots.push(merkleRoot);
+        endBlockToBatch[endBlock] = batchRoot;
+        allBatchRoots.push(batchRoot);
 
-        // Update all related copyrights status to Anchoring
+        // Forward RUID updates to CopyrightRegistry (single call, registry handles loop)
         CopyrightRegistry registry = CopyrightRegistry(COPYRIGHT_REGISTRY_ADDR);
-        for (uint256 i = 0; i < contentHashes.length; i++) {
-            bytes32 contentHash = contentHashes[i];
-            registry.updateAnchorStatus(
-                contentHash,
-                CopyrightRegistry.AnchorStatus.Anchoring,
-                merkleRoot,
-                0
-            );
-            emit CopyrightStatusUpdated(
-                contentHash,
-                merkleRoot,
-                CopyrightRegistry.AnchorStatus.Anchoring
-            );
-        }
+        registry.updateOtsStatus(ruids, batchRoot, 0, otsTimestamp);
 
-        emit AnchorSubmitted(merkleRoot, date, block.number, contentHashes);
+        emit BatchAnchored(
+            batchRoot,
+            endBlock,
+            startBlock,
+            0,
+            otsTimestamp,
+            uint32(ruids.length)
+        );
     }
 
-    /**
-     * @notice Confirm OTS anchor (called by OTS module after Bitcoin confirmation)
-     * @param merkleRoot Merkle root
-     * @param btcBlockHeight Bitcoin block height
-     * @param btcTxHash Bitcoin transaction hash
-     * @param otsProof OTS proof data (optional)
-     * @param contentHashes Content hash list to update
-     */
-    function confirmAnchor(
-        bytes32 merkleRoot,
-        uint256 btcBlockHeight,
-        bytes32 btcTxHash,
-        bytes calldata otsProof,
-        bytes32[] calldata contentHashes
-    ) external onlySystem onlyInit {
-        AnchorRecord storage record = anchorRecords[merkleRoot];
-        if (record.anchorBlock == 0) revert AnchorNotFound();
-        if (record.confirmed) revert AlreadyConfirmed();
-
-        record.btcBlockHeight = btcBlockHeight;
-        record.btcTxHash = btcTxHash;
-        record.otsProof = otsProof;
-        record.confirmed = true;
-
-        // Update all related copyrights status to Confirmed
-        CopyrightRegistry registry = CopyrightRegistry(COPYRIGHT_REGISTRY_ADDR);
-        for (uint256 i = 0; i < contentHashes.length; i++) {
-            bytes32 contentHash = contentHashes[i];
-            // Compute proof hash for this content (simplified: use merkleRoot)
-            bytes32 proofHash = keccak256(abi.encodePacked(merkleRoot, contentHash));
-            registry.updateAnchorStatus(
-                contentHash,
-                CopyrightRegistry.AnchorStatus.Confirmed,
-                proofHash,
-                btcBlockHeight
-            );
-            emit CopyrightStatusUpdated(
-                contentHash,
-                merkleRoot,
-                CopyrightRegistry.AnchorStatus.Confirmed
-            );
-        }
-
-        emit AnchorConfirmed(merkleRoot, btcBlockHeight, btcTxHash);
-    }
-
-    /**
-     * @notice Mark anchor as failed (OTS module call)
-     * @param merkleRoot Merkle root
-     * @param contentHashes Content hash list to update
-     */
-    function failAnchor(
-        bytes32 merkleRoot,
-        bytes32[] calldata contentHashes
-    ) external onlySystem onlyInit {
-        AnchorRecord storage record = anchorRecords[merkleRoot];
-        if (record.anchorBlock == 0) revert AnchorNotFound();
-
-        // Update all related copyrights status to Failed
-        CopyrightRegistry registry = CopyrightRegistry(COPYRIGHT_REGISTRY_ADDR);
-        for (uint256 i = 0; i < contentHashes.length; i++) {
-            bytes32 contentHash = contentHashes[i];
-            registry.updateAnchorStatus(
-                contentHash,
-                CopyrightRegistry.AnchorStatus.Failed,
-                bytes32(0),
-                0
-            );
-            emit CopyrightStatusUpdated(
-                contentHash,
-                merkleRoot,
-                CopyrightRegistry.AnchorStatus.Failed
-            );
-        }
-    }
-
-    // ============ Admin Functions ============
-
-    /**
-     * @notice Add system caller
-     * @param caller Caller address
-     */
-    function addSystemCaller(address caller) external onlyAdmin {
-        systemCallers[caller] = true;
-    }
-
-    /**
-     * @notice Remove system caller
-     * @param caller Caller address
-     */
-    function removeSystemCaller(address caller) external onlyAdmin {
-        systemCallers[caller] = false;
-    }
+    // ============ Admin Functions (Emergency Only) ============
 
     /**
      * @notice Transfer admin rights
@@ -273,54 +174,54 @@ contract OTSAnchor {
     // ============ View Functions ============
 
     /**
-     * @notice Get anchor record
-     * @param merkleRoot Merkle root
-     * @return AnchorRecord struct
+     * @notice Get batch record by root
+     * @param batchRoot Merkle root
+     * @return BatchRecord struct
      */
-    function getAnchorRecord(bytes32 merkleRoot) external view returns (AnchorRecord memory) {
-        return anchorRecords[merkleRoot];
+    function getBatchRecord(bytes32 batchRoot) external view returns (BatchRecord memory) {
+        return batchRecords[batchRoot];
     }
 
     /**
-     * @notice Get daily anchor
-     * @param date Date (YYYYMMDD)
-     * @return merkleRoot Merkle root for the date
+     * @notice Get batch root by end block
+     * @param endBlock End block number
+     * @return batchRoot Merkle root for the batch
      */
-    function getDailyAnchor(uint256 date) external view returns (bytes32) {
-        return dailyAnchors[date];
+    function getBatchByEndBlock(uint64 endBlock) external view returns (bytes32) {
+        return endBlockToBatch[endBlock];
     }
 
     /**
-     * @notice Get total anchor count
+     * @notice Get total batch count
      * @return uint256 Count
      */
-    function getTotalAnchors() external view returns (uint256) {
-        return allMerkleRoots.length;
+    function getTotalBatches() external view returns (uint256) {
+        return allBatchRoots.length;
     }
 
     /**
-     * @notice Check if anchor is confirmed
-     * @param merkleRoot Merkle root
-     * @return bool Whether confirmed
+     * @notice Check if batch exists
+     * @param batchRoot Merkle root
+     * @return bool Whether anchored
      */
-    function isConfirmed(bytes32 merkleRoot) external view returns (bool) {
-        return anchorRecords[merkleRoot].confirmed;
+    function isBatchAnchored(bytes32 batchRoot) external view returns (bool) {
+        return batchRecords[batchRoot].anchorBlock != 0;
     }
 
     /**
-     * @notice Verify content hash inclusion in merkle root
-     * @dev Simplified version, should use proper Merkle Proof verification
-     * @param contentHash Content hash
-     * @param merkleRoot Merkle root
-     * @param proof Merkle proof
+     * @notice Verify RUID inclusion in batch merkle root
+     * @dev Standard Merkle proof verification
+     * @param ruid RUID to verify
+     * @param batchRoot Merkle root
+     * @param proof Merkle proof path
      * @return bool Whether verification passed
      */
     function verifyInclusion(
-        bytes32 contentHash,
-        bytes32 merkleRoot,
+        bytes32 ruid,
+        bytes32 batchRoot,
         bytes32[] calldata proof
     ) external pure returns (bool) {
-        bytes32 computedHash = contentHash;
+        bytes32 computedHash = ruid;
         for (uint256 i = 0; i < proof.length; i++) {
             bytes32 proofElement = proof[i];
             if (computedHash <= proofElement) {
@@ -329,6 +230,6 @@ contract OTSAnchor {
                 computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
             }
         }
-        return computedHash == merkleRoot;
+        return computedHash == batchRoot;
     }
 }

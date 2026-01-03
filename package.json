@@ -12,7 +12,7 @@
     "generate:dev": "poetry run python -m scripts.generate dev --init-felony-slash-scope \"60\" --breathe-block-interval \"10 minutes\" --block-interval \"3 seconds\" --stake-hub-protector \"0x969cc730c57b4aC677d08a508A4E8963e4356898\" --unbond-period \"2 minutes\" --downtime-jail-time \"2 minutes\" --felony-jail-time \"3 minutes\" --init-voting-delay \"1 minutes / BLOCK_INTERVAL\" --init-voting-period \"2 minutes / BLOCK_INTERVAL\" --init-min-period-after-quorum \"uint64(1 minutes / BLOCK_INTERVAL)\" --governor-protector \"0x969cc730c57b4aC677d08a508A4E8963e4356898\" --init-minimal-delay \"1 minutes\""
   },
   "dependencies": {
-    "@openzeppelin/contracts": "^4.9.3",
+    "@openzeppelin/contracts": "^4.9.6",
     "@openzeppelin/contracts-upgradeable": "^4.9.3",
     "commander": "^3.0.1",
     "nunjucks": "^3.2.0",
