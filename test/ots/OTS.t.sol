@@ -1,408 +1,411 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.17;
+pragma solidity ^0.8.19;
 
 import "forge-std/Test.sol";
 import "../../contracts/ots/CopyrightRegistry.sol";
-import "../../contracts/ots/OTSAnchor.sol";
 
 /**
- * @title OTSTest
- * @notice Foundry tests for OTS contracts (CopyrightRegistry + OTSAnchor)
+ * @title CopyrightRegistryTest
+ * @notice Foundry tests for the unified CopyrightRegistry contract
  * @dev Run with: forge test --match-path test/ots/OTS.t.sol -vvv
+ *
+ * New Design:
+ * - Single contract at 0x9000
+ * - claim(ruid) - placeholder claim (hides auid/puid for sandwich attack prevention)
+ * - publish(ruid, auid, puid) - reveal identities
+ * - anchor(startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp) - system tx
  */
-contract OTSTest is Test {
-    // Contract addresses
-    address constant COPYRIGHT_REGISTRY_ADDR = 0x0000000000000000000000000000000000009000;
-    address constant OTS_ANCHOR_ADDR = 0x0000000000000000000000000000000000009001;
+contract CopyrightRegistryTest is Test {
+    // Contract address
+    address constant CONTRACT_ADDR = 0x0000000000000000000000000000000000009000;
 
-    CopyrightRegistry public copyrightRegistry;
-    OTSAnchor public otsAnchor;
+    CopyrightRegistry public registry;
 
     address public admin;
     address public user1;
     address public user2;
-    address public validator;
+    address public coinbase;
 
-    bytes32 public sampleContentHash;
-    string public sampleTitle = "Test Work";
-    string public sampleAuthor = "Test Author";
+    // Sample test data
+    bytes32 public samplePuid;
+    bytes32 public sampleAuid;
+    bytes32 public sampleRuid;
 
+    // Events (matching contract)
     event CopyrightClaimed(
-        bytes32 indexed contentHash,
-        address indexed owner,
-        string title,
-        string author,
-        uint256 registeredAt,
-        uint256 registeredBlock
+        bytes32 indexed ruid,
+        address indexed claimant,
+        uint64  submitBlock
     );
 
-    event AnchorStatusUpdated(
-        bytes32 indexed contentHash,
-        CopyrightRegistry.AnchorStatus status,
-        bytes32 otsProofHash,
-        uint256 btcBlockHeight
+    event CopyrightPublished(
+        bytes32 indexed ruid,
+        bytes32 indexed auid,
+        bytes32 indexed puid,
+        address claimant
     );
 
-    event AnchorSubmitted(
-        bytes32 indexed merkleRoot,
-        uint256 indexed date,
-        uint256 anchorBlock,
-        bytes32[] contentHashes
-    );
-
-    event AnchorConfirmed(
-        bytes32 indexed merkleRoot,
-        uint256 btcBlockHeight,
-        bytes32 btcTxHash
+    event CopyrightAnchored(
+        uint256 indexed batchId,
+        uint64  startBlock,
+        uint64  endBlock,
+        bytes32 batchRoot,
+        bytes32 btcTxHash,
+        uint64  btcTimestamp
     );
 
     function setUp() public {
         admin = address(this);
         user1 = makeAddr("user1");
         user2 = makeAddr("user2");
-        validator = makeAddr("validator");
+        coinbase = makeAddr("coinbase");
 
         vm.deal(user1, 10 ether);
         vm.deal(user2, 10 ether);
-        vm.deal(validator, 10 ether);
 
-        sampleContentHash = keccak256("Sample content for testing");
+        // Create sample data
+        samplePuid = keccak256(abi.encodePacked("user1", "identity"));
+        sampleAuid = keccak256(abi.encodePacked("asset", "content"));
+        sampleRuid = keccak256(abi.encodePacked(samplePuid, sampleAuid));
 
-        // Deploy contracts to fixed addresses
-        bytes memory registryCode = type(CopyrightRegistry).creationCode;
-        bytes memory anchorCode = type(OTSAnchor).creationCode;
+        // Deploy contract to fixed address
+        vm.etch(CONTRACT_ADDR, address(new CopyrightRegistry()).code);
+        registry = CopyrightRegistry(CONTRACT_ADDR);
 
-        vm.etch(COPYRIGHT_REGISTRY_ADDR, address(new CopyrightRegistry()).code);
-        vm.etch(OTS_ANCHOR_ADDR, address(new OTSAnchor()).code);
-
-        copyrightRegistry = CopyrightRegistry(COPYRIGHT_REGISTRY_ADDR);
-        otsAnchor = OTSAnchor(OTS_ANCHOR_ADDR);
-
-        // Initialize contracts
-        copyrightRegistry.init(admin);
-        otsAnchor.init(admin);
+        // Initialize contract
+        registry.init(admin);
     }
 
-    // ============ CopyrightRegistry Tests ============
+    // ============ Initialization Tests ============
 
-    function test_Registry_Init() public view {
-        assertEq(copyrightRegistry.admin(), admin);
-        assertTrue(copyrightRegistry.initialized());
+    function test_Init() public {
+        assertEq(registry.admin(), admin);
+        assertTrue(registry.initialized());
+        assertEq(registry.batchCount(), 0);
+        assertEq(registry.lastAnchoredEndBlock(), 0);
     }
 
-    function test_Registry_ClaimCopyright() public {
+    function test_Init_RevertAlreadyInitialized() public {
+        vm.expectRevert(CopyrightRegistry.AlreadyInitialized.selector);
+        registry.init(user1);
+    }
+
+    // ============ Claim Tests ============
+
+    function test_Claim() public {
         vm.prank(user1);
         vm.expectEmit(true, true, false, true);
-        emit CopyrightClaimed(
-            sampleContentHash,
-            user1,
-            sampleTitle,
-            sampleAuthor,
-            block.timestamp,
-            block.number
-        );
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
+        emit CopyrightClaimed(sampleRuid, user1, uint64(block.number));
+        registry.claim(sampleRuid);
 
-        CopyrightRegistry.Copyright memory c = copyrightRegistry.getCopyright(sampleContentHash);
-        assertEq(c.contentHash, sampleContentHash);
-        assertEq(c.owner, user1);
-        assertEq(c.title, sampleTitle);
-        assertEq(c.author, sampleAuthor);
-        assertEq(uint8(c.status), uint8(CopyrightRegistry.AnchorStatus.Pending));
+        CopyrightRegistry.CopyrightRecord memory rec = registry.getCopyright(sampleRuid);
+        assertEq(rec.claimant, user1);
+        assertEq(rec.submitBlock, uint64(block.number));
+        assertEq(rec.auid, bytes32(0)); // Not revealed yet
+        assertEq(rec.puid, bytes32(0)); // Not revealed yet
+        assertFalse(rec.published);
     }
 
-    function test_Registry_ClaimCopyright_RevertDuplicate() public {
+    function test_Claim_RevertInvalidRuid() public {
         vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
+        vm.expectRevert(CopyrightRegistry.InvalidRuid.selector);
+        registry.claim(bytes32(0));
+    }
+
+    function test_Claim_RevertAlreadyClaimed() public {
+        vm.prank(user1);
+        registry.claim(sampleRuid);
 
         vm.prank(user2);
-        vm.expectRevert(CopyrightRegistry.AlreadyRegistered.selector);
-        copyrightRegistry.claimCopyright(sampleContentHash, "Other Title", "Other Author");
+        vm.expectRevert(CopyrightRegistry.AlreadyClaimed.selector);
+        registry.claim(sampleRuid);
     }
 
-    function test_Registry_ClaimCopyright_RevertInvalidHash() public {
+    function test_IsClaimed() public {
+        assertFalse(registry.isClaimed(sampleRuid));
+
         vm.prank(user1);
-        vm.expectRevert(CopyrightRegistry.InvalidContentHash.selector);
-        copyrightRegistry.claimCopyright(bytes32(0), sampleTitle, sampleAuthor);
+        registry.claim(sampleRuid);
+
+        assertTrue(registry.isClaimed(sampleRuid));
     }
 
-    function test_Registry_ClaimCopyright_RevertEmptyTitle() public {
+    // ============ Publish Tests ============
+
+    function test_Publish() public {
+        // First claim
         vm.prank(user1);
-        vm.expectRevert(CopyrightRegistry.TitleRequired.selector);
-        copyrightRegistry.claimCopyright(sampleContentHash, "", sampleAuthor);
-    }
+        registry.claim(sampleRuid);
 
-    function test_Registry_ClaimCopyright_RevertEmptyAuthor() public {
+        // Then publish
         vm.prank(user1);
-        vm.expectRevert(CopyrightRegistry.AuthorRequired.selector);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, "");
+        vm.expectEmit(true, true, true, true);
+        emit CopyrightPublished(sampleRuid, sampleAuid, samplePuid, user1);
+        registry.publish(sampleRuid, sampleAuid, samplePuid);
+
+        CopyrightRegistry.CopyrightRecord memory rec = registry.getCopyright(sampleRuid);
+        assertEq(rec.auid, sampleAuid);
+        assertEq(rec.puid, samplePuid);
+        assertTrue(rec.published);
     }
 
-    function test_Registry_PendingAnchors() public {
+    function test_Publish_RevertInvalidRuid() public {
         vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
-
-        bytes32[] memory pending = copyrightRegistry.getPendingAnchors();
-        assertEq(pending.length, 1);
-        assertEq(pending[0], sampleContentHash);
-        assertEq(copyrightRegistry.getPendingCount(), 1);
+        vm.expectRevert(CopyrightRegistry.InvalidRuid.selector);
+        registry.publish(sampleRuid, sampleAuid, samplePuid);
     }
 
-    function test_Registry_OwnerCopyrights() public {
-        bytes32 hash1 = keccak256("content 1");
-        bytes32 hash2 = keccak256("content 2");
+    function test_Publish_RevertNotClaimant() public {
+        vm.prank(user1);
+        registry.claim(sampleRuid);
 
+        vm.prank(user2);
+        vm.expectRevert(CopyrightRegistry.NotClaimant.selector);
+        registry.publish(sampleRuid, sampleAuid, samplePuid);
+    }
+
+    function test_Publish_RevertAlreadyPublished() public {
         vm.startPrank(user1);
-        copyrightRegistry.claimCopyright(hash1, "Work 1", "Author 1");
-        copyrightRegistry.claimCopyright(hash2, "Work 2", "Author 2");
+        registry.claim(sampleRuid);
+        registry.publish(sampleRuid, sampleAuid, samplePuid);
+
+        vm.expectRevert(CopyrightRegistry.AlreadyPublished.selector);
+        registry.publish(sampleRuid, sampleAuid, samplePuid);
         vm.stopPrank();
-
-        bytes32[] memory owned = copyrightRegistry.getCopyrightsByOwner(user1);
-        assertEq(owned.length, 2);
     }
 
-    function test_Registry_IsRegistered() public {
-        assertFalse(copyrightRegistry.isRegistered(sampleContentHash));
-
+    function test_Publish_RevertMismatchedRuid() public {
         vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
+        registry.claim(sampleRuid);
 
-        assertTrue(copyrightRegistry.isRegistered(sampleContentHash));
+        bytes32 wrongAuid = keccak256("wrong asset");
+        vm.prank(user1);
+        vm.expectRevert(CopyrightRegistry.InvalidRuid.selector);
+        registry.publish(sampleRuid, wrongAuid, samplePuid);
     }
 
-    function test_Registry_UpdateStatus_RevertNotAnchor() public {
-        vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
+    function test_IsPublished() public {
+        assertFalse(registry.isPublished(sampleRuid));
 
         vm.prank(user1);
-        vm.expectRevert(CopyrightRegistry.OnlyOTSAnchor.selector);
-        copyrightRegistry.updateAnchorStatus(
-            sampleContentHash,
-            CopyrightRegistry.AnchorStatus.Confirmed,
-            bytes32(0),
-            800000
-        );
+        registry.claim(sampleRuid);
+        assertFalse(registry.isPublished(sampleRuid));
+
+        vm.prank(user1);
+        registry.publish(sampleRuid, sampleAuid, samplePuid);
+        assertTrue(registry.isPublished(sampleRuid));
     }
 
-    // ============ OTSAnchor Tests ============
+    // ============ Anchor Tests ============
 
-    function test_Anchor_Init() public view {
-        assertEq(otsAnchor.admin(), admin);
-        assertTrue(otsAnchor.initialized());
-    }
-
-    function test_Anchor_SubmitAnchor() public {
-        // First register a copyright
-        vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
-
-        // Submit anchor (admin can call as system caller)
-        bytes32 merkleRoot = keccak256("merkle root");
-        uint256 date = 20250101;
-        bytes32[] memory hashes = new bytes32[](1);
-        hashes[0] = sampleContentHash;
-
-        vm.expectEmit(true, true, false, true);
-        emit AnchorSubmitted(merkleRoot, date, block.number, hashes);
-        otsAnchor.submitAnchor(merkleRoot, date, hashes);
-
-        // Check anchor record
-        OTSAnchor.AnchorRecord memory record = otsAnchor.getAnchorRecord(merkleRoot);
-        assertEq(record.merkleRoot, merkleRoot);
-        assertFalse(record.confirmed);
-
-        // Check copyright status updated
-        CopyrightRegistry.Copyright memory c = copyrightRegistry.getCopyright(sampleContentHash);
-        assertEq(uint8(c.status), uint8(CopyrightRegistry.AnchorStatus.Anchoring));
-    }
-
-    function test_Anchor_SubmitAnchor_SystemCall() public {
-        // Register copyright
-        vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
-
-        // Add validator as system caller
-        otsAnchor.addSystemCaller(validator);
-
-        // Submit anchor with gasPrice = 0 (system transaction simulation)
-        bytes32 merkleRoot = keccak256("merkle root");
-        uint256 date = 20250101;
-        bytes32[] memory hashes = new bytes32[](1);
-        hashes[0] = sampleContentHash;
-
-        vm.prank(validator);
-        vm.txGasPrice(0); // Simulate system transaction
-        otsAnchor.submitAnchor(merkleRoot, date, hashes);
-
-        assertTrue(otsAnchor.getDailyAnchor(date) == merkleRoot);
-    }
-
-    function test_Anchor_SubmitAnchor_RevertDuplicateDate() public {
-        vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
-
-        bytes32 merkleRoot1 = keccak256("root 1");
-        bytes32 merkleRoot2 = keccak256("root 2");
-        uint256 date = 20250101;
-        bytes32[] memory hashes = new bytes32[](1);
-        hashes[0] = sampleContentHash;
-
-        otsAnchor.submitAnchor(merkleRoot1, date, hashes);
-
-        vm.expectRevert(OTSAnchor.DateAlreadyAnchored.selector);
-        otsAnchor.submitAnchor(merkleRoot2, date, hashes);
-    }
-
-    function test_Anchor_ConfirmAnchor() public {
-        // Setup: register and submit anchor
-        vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
-
-        bytes32 merkleRoot = keccak256("merkle root");
-        uint256 date = 20250101;
-        bytes32[] memory hashes = new bytes32[](1);
-        hashes[0] = sampleContentHash;
-
-        otsAnchor.submitAnchor(merkleRoot, date, hashes);
-
-        // Confirm anchor
-        uint256 btcBlockHeight = 800000;
+    function test_Anchor() public {
+        uint64 startBlock = 1;
+        uint64 endBlock = 100;
+        bytes32 batchRoot = keccak256("batch root");
         bytes32 btcTxHash = keccak256("btc tx");
+        uint64 btcTimestamp = 1700000000;
 
+        // Set coinbase and gasPrice
+        vm.coinbase(coinbase);
+        vm.txGasPrice(0);
+
+        vm.prank(coinbase);
         vm.expectEmit(true, false, false, true);
-        emit AnchorConfirmed(merkleRoot, btcBlockHeight, btcTxHash);
-        otsAnchor.confirmAnchor(merkleRoot, btcBlockHeight, btcTxHash, "", hashes);
+        emit CopyrightAnchored(1, startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp);
+        registry.anchor(startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp);
 
-        // Check anchor confirmed
-        assertTrue(otsAnchor.isConfirmed(merkleRoot));
+        // Verify batch record
+        CopyrightRegistry.BatchRecord memory batch = registry.getBatch(1);
+        assertEq(batch.startBlock, startBlock);
+        assertEq(batch.endBlock, endBlock);
+        assertEq(batch.batchRoot, batchRoot);
+        assertEq(batch.btcTxHash, btcTxHash);
+        assertEq(batch.btcTimestamp, btcTimestamp);
 
-        // Check copyright status
-        CopyrightRegistry.Copyright memory c = copyrightRegistry.getCopyright(sampleContentHash);
-        assertEq(uint8(c.status), uint8(CopyrightRegistry.AnchorStatus.Confirmed));
-        assertEq(c.btcBlockHeight, btcBlockHeight);
+        assertEq(registry.batchCount(), 1);
+        assertEq(registry.lastAnchoredEndBlock(), endBlock);
     }
 
-    function test_Anchor_ConfirmAnchor_RevertNotFound() public {
-        bytes32 merkleRoot = keccak256("unknown root");
-        bytes32[] memory hashes = new bytes32[](0);
+    function test_Anchor_EmptyBatch() public {
+        uint64 startBlock = 1;
+        uint64 endBlock = 100;
+        bytes32 batchRoot = bytes32(0); // Empty batch
+        bytes32 btcTxHash = bytes32(0);
+        uint64 btcTimestamp = 0;
 
-        vm.expectRevert(OTSAnchor.AnchorNotFound.selector);
-        otsAnchor.confirmAnchor(merkleRoot, 800000, bytes32(0), "", hashes);
+        vm.coinbase(coinbase);
+        vm.txGasPrice(0);
+
+        vm.prank(coinbase);
+        registry.anchor(startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp);
+
+        CopyrightRegistry.BatchRecord memory batch = registry.getBatch(1);
+        assertEq(batch.batchRoot, bytes32(0));
+        assertEq(registry.batchCount(), 1);
     }
 
-    function test_Anchor_ConfirmAnchor_RevertAlreadyConfirmed() public {
+    function test_Anchor_SequentialBatches() public {
+        vm.coinbase(coinbase);
+        vm.txGasPrice(0);
+
+        // First batch: blocks 1-100
+        vm.prank(coinbase);
+        registry.anchor(1, 100, keccak256("root1"), bytes32(0), 0);
+        assertEq(registry.lastAnchoredEndBlock(), 100);
+
+        // Second batch: blocks 101-200 (sequential)
+        vm.prank(coinbase);
+        registry.anchor(101, 200, keccak256("root2"), bytes32(0), 0);
+        assertEq(registry.lastAnchoredEndBlock(), 200);
+
+        // Third batch: blocks 201-300 (sequential)
+        vm.prank(coinbase);
+        registry.anchor(201, 300, keccak256("root3"), bytes32(0), 0);
+        assertEq(registry.lastAnchoredEndBlock(), 300);
+        assertEq(registry.batchCount(), 3);
+    }
+
+    function test_Anchor_RevertNotSequential() public {
+        vm.coinbase(coinbase);
+        vm.txGasPrice(0);
+
+        // First batch: blocks 1-100
+        vm.prank(coinbase);
+        registry.anchor(1, 100, keccak256("root1"), bytes32(0), 0);
+
+        // Try to anchor non-sequential batch (should start at 101)
+        vm.prank(coinbase);
+        vm.expectRevert(CopyrightRegistry.BatchNotSequential.selector);
+        registry.anchor(102, 200, keccak256("root2"), bytes32(0), 0);
+    }
+
+    function test_Anchor_RevertInvalidBlockRange() public {
+        vm.coinbase(coinbase);
+        vm.txGasPrice(0);
+
+        vm.prank(coinbase);
+        vm.expectRevert(CopyrightRegistry.InvalidBlockRange.selector);
+        registry.anchor(100, 1, keccak256("root"), bytes32(0), 0); // startBlock > endBlock
+    }
+
+    function test_Anchor_RevertNotCoinbase() public {
+        vm.coinbase(coinbase);
+        vm.txGasPrice(0);
+
         vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
-
-        bytes32 merkleRoot = keccak256("merkle root");
-        bytes32[] memory hashes = new bytes32[](1);
-        hashes[0] = sampleContentHash;
-
-        otsAnchor.submitAnchor(merkleRoot, 20250101, hashes);
-        otsAnchor.confirmAnchor(merkleRoot, 800000, bytes32(0), "", hashes);
-
-        vm.expectRevert(OTSAnchor.AlreadyConfirmed.selector);
-        otsAnchor.confirmAnchor(merkleRoot, 800001, bytes32(0), "", hashes);
+        vm.expectRevert(CopyrightRegistry.OnlyCoinbase.selector);
+        registry.anchor(1, 100, keccak256("root"), bytes32(0), 0);
     }
 
-    function test_Anchor_FailAnchor() public {
-        vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
+    function test_Anchor_RevertNotSystemTx() public {
+        vm.coinbase(coinbase);
+        vm.txGasPrice(1 gwei); // Non-zero gas price
 
-        bytes32 merkleRoot = keccak256("merkle root");
-        bytes32[] memory hashes = new bytes32[](1);
-        hashes[0] = sampleContentHash;
-
-        otsAnchor.submitAnchor(merkleRoot, 20250101, hashes);
-        otsAnchor.failAnchor(merkleRoot, hashes);
-
-        CopyrightRegistry.Copyright memory c = copyrightRegistry.getCopyright(sampleContentHash);
-        assertEq(uint8(c.status), uint8(CopyrightRegistry.AnchorStatus.Failed));
-    }
-
-    // ============ Merkle Proof Tests ============
-
-    function test_Anchor_VerifyInclusion() public view {
-        // Build simple merkle tree with 2 leaves
-        bytes32 leaf1 = keccak256("leaf1");
-        bytes32 leaf2 = keccak256("leaf2");
-
-        // Compute root
-        bytes32 root;
-        if (leaf1 <= leaf2) {
-            root = keccak256(abi.encodePacked(leaf1, leaf2));
-        } else {
-            root = keccak256(abi.encodePacked(leaf2, leaf1));
-        }
-
-        // Verify leaf1 with proof [leaf2]
-        bytes32[] memory proof = new bytes32[](1);
-        proof[0] = leaf2;
-
-        assertTrue(otsAnchor.verifyInclusion(leaf1, root, proof));
+        vm.prank(coinbase);
+        vm.expectRevert(CopyrightRegistry.OnlySystemTx.selector);
+        registry.anchor(1, 100, keccak256("root"), bytes32(0), 0);
     }
 
     // ============ Admin Tests ============
 
-    function test_Registry_TransferAdmin() public {
+    function test_TransferAdmin() public {
         address newAdmin = makeAddr("newAdmin");
-        copyrightRegistry.transferAdmin(newAdmin);
-        assertEq(copyrightRegistry.admin(), newAdmin);
+        registry.transferAdmin(newAdmin);
+        assertEq(registry.admin(), newAdmin);
     }
 
-    function test_Anchor_TransferAdmin() public {
-        address newAdmin = makeAddr("newAdmin");
-        otsAnchor.transferAdmin(newAdmin);
-        assertEq(otsAnchor.admin(), newAdmin);
-    }
-
-    function test_Anchor_AddRemoveSystemCaller() public {
-        address caller = makeAddr("caller");
-
-        assertFalse(otsAnchor.systemCallers(caller));
-
-        otsAnchor.addSystemCaller(caller);
-        assertTrue(otsAnchor.systemCallers(caller));
-
-        otsAnchor.removeSystemCaller(caller);
-        assertFalse(otsAnchor.systemCallers(caller));
-    }
-
-    // ============ Full Flow Test ============
-
-    function test_FullFlow_RegisterToConfirm() public {
-        // 1. User registers copyright
+    function test_TransferAdmin_RevertNotAdmin() public {
         vm.prank(user1);
-        copyrightRegistry.claimCopyright(sampleContentHash, sampleTitle, sampleAuthor);
+        vm.expectRevert(CopyrightRegistry.OnlyAdmin.selector);
+        registry.transferAdmin(user1);
+    }
 
-        CopyrightRegistry.Copyright memory c = copyrightRegistry.getCopyright(sampleContentHash);
-        assertEq(uint8(c.status), uint8(CopyrightRegistry.AnchorStatus.Pending));
+    function test_TransferAdmin_RevertZeroAddress() public {
+        vm.expectRevert("invalid admin");
+        registry.transferAdmin(address(0));
+    }
 
-        // 2. OTS module submits anchor
-        bytes32 merkleRoot = keccak256(abi.encodePacked(sampleContentHash));
-        bytes32[] memory hashes = new bytes32[](1);
-        hashes[0] = sampleContentHash;
+    // ============ Full Flow Tests ============
 
-        otsAnchor.submitAnchor(merkleRoot, 20250101, hashes);
+    function test_FullFlow_ClaimPublishAnchor() public {
+        // 1. User claims copyright (placeholder)
+        vm.prank(user1);
+        registry.claim(sampleRuid);
 
-        c = copyrightRegistry.getCopyright(sampleContentHash);
-        assertEq(uint8(c.status), uint8(CopyrightRegistry.AnchorStatus.Anchoring));
+        CopyrightRegistry.CopyrightRecord memory rec = registry.getCopyright(sampleRuid);
+        assertEq(rec.claimant, user1);
+        assertFalse(rec.published);
 
-        // 3. Bitcoin confirms, OTS module confirms anchor
-        uint256 btcHeight = 800000;
-        bytes32 btcTx = keccak256("btc transaction");
+        // 2. User publishes (reveals auid/puid)
+        vm.prank(user1);
+        registry.publish(sampleRuid, sampleAuid, samplePuid);
 
-        otsAnchor.confirmAnchor(merkleRoot, btcHeight, btcTx, "", hashes);
+        rec = registry.getCopyright(sampleRuid);
+        assertTrue(rec.published);
+        assertEq(rec.auid, sampleAuid);
+        assertEq(rec.puid, samplePuid);
 
-        c = copyrightRegistry.getCopyright(sampleContentHash);
-        assertEq(uint8(c.status), uint8(CopyrightRegistry.AnchorStatus.Confirmed));
-        assertEq(c.btcBlockHeight, btcHeight);
+        // 3. System anchors batch
+        vm.coinbase(coinbase);
+        vm.txGasPrice(0);
 
-        // 4. Verify copyright removed from pending
-        assertEq(copyrightRegistry.getPendingCount(), 0);
+        vm.prank(coinbase);
+        registry.anchor(
+            1,
+            uint64(block.number),
+            keccak256(abi.encodePacked(sampleRuid)),
+            keccak256("btc tx"),
+            1700000000
+        );
 
-        // 5. Verify total counts
-        assertEq(copyrightRegistry.getTotalRegistered(), 1);
-        assertEq(otsAnchor.getTotalAnchors(), 1);
+        // Verify batch
+        CopyrightRegistry.BatchRecord memory batch = registry.getBatch(1);
+        assertEq(batch.startBlock, 1);
+        assertEq(batch.btcTimestamp, 1700000000);
+    }
+
+    function test_MultipleClaims() public {
+        bytes32[] memory ruids = new bytes32[](5);
+
+        for (uint i = 0; i < 5; i++) {
+            bytes32 puid = keccak256(abi.encodePacked("user", i));
+            bytes32 auid = keccak256(abi.encodePacked("asset", i));
+            ruids[i] = keccak256(abi.encodePacked(puid, auid));
+
+            vm.prank(user1);
+            registry.claim(ruids[i]);
+        }
+
+        // Verify all claimed
+        for (uint i = 0; i < 5; i++) {
+            assertTrue(registry.isClaimed(ruids[i]));
+        }
+    }
+
+    function test_SandwichAttackPrevention() public {
+        // Attacker sees user1's claim transaction in mempool
+        // But they only see the ruid, not auid/puid
+
+        // User1 claims (only ruid is visible)
+        vm.prank(user1);
+        registry.claim(sampleRuid);
+
+        // Attacker cannot front-run because:
+        // 1. They don't know auid/puid (hidden until publish)
+        // 2. The same ruid cannot be claimed twice
+
+        vm.prank(user2);
+        vm.expectRevert(CopyrightRegistry.AlreadyClaimed.selector);
+        registry.claim(sampleRuid);
+
+        // Only original claimant can publish
+        vm.prank(user2);
+        vm.expectRevert(CopyrightRegistry.NotClaimant.selector);
+        registry.publish(sampleRuid, sampleAuid, samplePuid);
+
+        // User1 can still publish their claim
+        vm.prank(user1);
+        registry.publish(sampleRuid, sampleAuid, samplePuid);
+        assertTrue(registry.isPublished(sampleRuid));
     }
 }
