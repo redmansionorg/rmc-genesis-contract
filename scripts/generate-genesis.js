@@ -60,6 +60,7 @@ Promise.all([
   readByteCode('govToken', 'out/GovToken.sol/GovToken.json'),
   readByteCode('timelock', 'out/BSCTimelock.sol/BSCTimelock.json'),
   readByteCode('tokenRecoverPortal', 'out/TokenRecoverPortal.sol/TokenRecoverPortal.json'),
+  readByteCode('copyrightRegistry', 'out/CopyrightRegistry.sol/CopyrightRegistry.json'),
 ]).then((result) => {
   const data = {
     initLockedBNBOnTokenHub: program.initLockedBNBOnTokenHub,

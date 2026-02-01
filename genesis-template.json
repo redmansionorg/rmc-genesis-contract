@@ -28,6 +28,26 @@
     "shanghaiTime": 0,
     "keplerTime": 0,
     "feynmanTime": 0,
+    "feynmanFixTime": 0,
+    "cancunTime": 0,
+    "haberTime": 0,
+    "haberFixTime": 0,
+    "bohrTime": 0,
+    "pascalTime": 0,
+    "pragueTime": 0,
+    "lorentzTime": 0,
+    "blobSchedule": {
+      "cancun": {
+        "target": 3,
+        "max": 6,
+        "baseFeeUpdateFraction": 3338477
+      },
+      "prague": {
+        "target": 6,
+        "max": 9,
+        "baseFeeUpdateFraction": 5007716
+      }
+    },
     "parlia": {
       "period": 3,
       "epoch": 200
@@ -111,6 +131,10 @@
     "0x0000000000000000000000000000000000003000": {
       "balance": "0x0",
       "code": "{{tokenRecoverPortal}}"
+    },
+    "0x0000000000000000000000000000000000009000": {
+      "balance": "0x0",
+      "code": "{{copyrightRegistry}}"
     },
     "0x413dF5c1e23768Ab90e5790411dDcafDc2A1Fc3b": {
       "balance": "0x152d02c7e14af6000000"

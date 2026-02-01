@@ -55,14 +55,14 @@ contract CopyrightRegistry {
     // ==================== 事件 ====================
 
     /// @notice 版权声明事件 (占位)
-    event CopyrightClaimed(
+    event Claimed(
         bytes32 indexed ruid,
         address indexed claimant,
         uint64  submitBlock
     );
 
     /// @notice 批次锚定事件
-    event CopyrightAnchored(
+    event Anchored(
         uint256 indexed batchId,
         uint64  startBlock,
         uint64  endBlock,
@@ -72,7 +72,7 @@ contract CopyrightRegistry {
     );
 
     /// @notice 版权发行事件 (公开)
-    event CopyrightPublished(
+    event Published(
         bytes32 indexed ruid,
         bytes32 indexed auid,
         bytes32 indexed puid,
@@ -148,7 +148,7 @@ contract CopyrightRegistry {
             published:   false
         });
 
-        emit CopyrightClaimed(ruid, msg.sender, uint64(block.number));
+        emit Claimed(ruid, msg.sender, uint64(block.number));
     }
 
     /**
@@ -171,7 +171,7 @@ contract CopyrightRegistry {
         rec.puid = puid;
         rec.published = true;
 
-        emit CopyrightPublished(ruid, auid, puid, msg.sender);
+        emit Published(ruid, auid, puid, msg.sender);
     }
 
     // ==================== 系统接口 ====================
@@ -219,7 +219,7 @@ contract CopyrightRegistry {
         // 更新锚定进度
         lastAnchoredEndBlock = endBlock;
 
-        emit CopyrightAnchored(
+        emit Anchored(
             batchId,
             startBlock,
             endBlock,

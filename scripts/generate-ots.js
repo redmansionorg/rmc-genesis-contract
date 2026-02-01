@@ -1,7 +1,7 @@
 /**
  * OTS Genesis Generator
  *
- * Generates OTS contract bytecode for genesis block allocation.
+ * Generates CopyrightRegistry contract bytecode for genesis block allocation.
  *
  * Usage:
  *   node scripts/generate-ots.js [options]
@@ -32,10 +32,6 @@ const OTS_CONTRACTS = {
   copyrightRegistry: {
     address: '0x0000000000000000000000000000000000009000',
     artifact: 'out/CopyrightRegistry.sol/CopyrightRegistry.json'
-  },
-  otsAnchor: {
-    address: '0x0000000000000000000000000000000000009001',
-    artifact: 'out/OTSAnchor.sol/OTSAnchor.json'
   }
 };
 
@@ -133,8 +129,8 @@ async function main() {
   console.log('2. Configure RMC node with:');
   console.log('   [Eth.OTS]');
   console.log('   Enabled = true');
-  console.log('   Mode = "anchor"');
-  console.log(`   ContractAddress = "${OTS_CONTRACTS.otsAnchor.address}"`);
+  console.log('   Mode = "full"');
+  console.log(`   ContractAddress = "${OTS_CONTRACTS.copyrightRegistry.address}"`);
   console.log('='.repeat(60));
 }
 

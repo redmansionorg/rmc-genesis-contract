@@ -32,20 +32,20 @@ contract CopyrightRegistryTest is Test {
     bytes32 public sampleRuid;
 
     // Events (matching contract)
-    event CopyrightClaimed(
+    event Claimed(
         bytes32 indexed ruid,
         address indexed claimant,
         uint64  submitBlock
     );
 
-    event CopyrightPublished(
+    event Published(
         bytes32 indexed ruid,
         bytes32 indexed auid,
         bytes32 indexed puid,
         address claimant
     );
 
-    event CopyrightAnchored(
+    event Anchored(
         uint256 indexed batchId,
         uint64  startBlock,
         uint64  endBlock,
@@ -95,7 +95,7 @@ contract CopyrightRegistryTest is Test {
     function test_Claim() public {
         vm.prank(user1);
         vm.expectEmit(true, true, false, true);
-        emit CopyrightClaimed(sampleRuid, user1, uint64(block.number));
+        emit Claimed(sampleRuid, user1, uint64(block.number));
         registry.claim(sampleRuid);
 
         CopyrightRegistry.CopyrightRecord memory rec = registry.getCopyright(sampleRuid);
@@ -140,7 +140,7 @@ contract CopyrightRegistryTest is Test {
         // Then publish
         vm.prank(user1);
         vm.expectEmit(true, true, true, true);
-        emit CopyrightPublished(sampleRuid, sampleAuid, samplePuid, user1);
+        emit Published(sampleRuid, sampleAuid, samplePuid, user1);
         registry.publish(sampleRuid, sampleAuid, samplePuid);
 
         CopyrightRegistry.CopyrightRecord memory rec = registry.getCopyright(sampleRuid);
@@ -211,7 +211,7 @@ contract CopyrightRegistryTest is Test {
 
         vm.prank(coinbase);
         vm.expectEmit(true, false, false, true);
-        emit CopyrightAnchored(1, startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp);
+        emit Anchored(1, startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp);
         registry.anchor(startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp);
 
         // Verify batch record
