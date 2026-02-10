@@ -56,4 +56,5 @@ remappings = [
 ]
 optimizer = true
 optimizer_runs = 200
+evm_version = "paris"
 verbosity = 3
