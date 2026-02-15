@@ -30,6 +30,7 @@ contract CopyrightRegistry {
         bytes32 batchRoot;     // Merkle Root of RUIDs
         bytes32 btcTxHash;     // BTC 交易哈希
         uint64  btcTimestamp;  // BTC 区块时间戳
+        bytes   otsProof;      // OTS proof (序列化的 OpenTimestamps 证明)
     }
 
     // ==================== 状态变量 ====================
@@ -68,7 +69,8 @@ contract CopyrightRegistry {
         uint64  endBlock,
         bytes32 batchRoot,
         bytes32 btcTxHash,
-        uint64  btcTimestamp
+        uint64  btcTimestamp,
+        bytes   otsProof
     );
 
     /// @notice 版权发行事件 (公开)
@@ -193,7 +195,8 @@ contract CopyrightRegistry {
         uint64  endBlock,
         bytes32 batchRoot,
         bytes32 btcTxHash,
-        uint64  btcTimestamp
+        uint64  btcTimestamp,
+        bytes   calldata otsProof
     ) external onlyInit onlyCoinbase onlySystemTx {
         // 验证区块范围
         if (startBlock > endBlock) revert InvalidBlockRange();
@@ -213,7 +216,8 @@ contract CopyrightRegistry {
             endBlock:     endBlock,
             batchRoot:    batchRoot,
             btcTxHash:    btcTxHash,
-            btcTimestamp: btcTimestamp
+            btcTimestamp: btcTimestamp,
+            otsProof:     otsProof
         });
 
         // 更新锚定进度
@@ -225,7 +229,8 @@ contract CopyrightRegistry {
             endBlock,
             batchRoot,
             btcTxHash,
-            btcTimestamp
+            btcTimestamp,
+            otsProof
         );
     }
 

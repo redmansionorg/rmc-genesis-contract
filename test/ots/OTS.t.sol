@@ -51,7 +51,8 @@ contract CopyrightRegistryTest is Test {
         uint64  endBlock,
         bytes32 batchRoot,
         bytes32 btcTxHash,
-        uint64  btcTimestamp
+        uint64  btcTimestamp,
+        bytes   otsProof
     );
 
     function setUp() public {
@@ -211,8 +212,8 @@ contract CopyrightRegistryTest is Test {
 
         vm.prank(coinbase);
         vm.expectEmit(true, false, false, true);
-        emit Anchored(1, startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp);
-        registry.anchor(startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp);
+        emit Anchored(1, startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp, "");
+        registry.anchor(startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp, "");
 
         // Verify batch record
         CopyrightRegistry.BatchRecord memory batch = registry.getBatch(1);
@@ -237,7 +238,7 @@ contract CopyrightRegistryTest is Test {
         vm.txGasPrice(0);
 
         vm.prank(coinbase);
-        registry.anchor(startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp);
+        registry.anchor(startBlock, endBlock, batchRoot, btcTxHash, btcTimestamp, "");
 
         CopyrightRegistry.BatchRecord memory batch = registry.getBatch(1);
         assertEq(batch.batchRoot, bytes32(0));
@@ -250,17 +251,17 @@ contract CopyrightRegistryTest is Test {
 
         // First batch: blocks 1-100
         vm.prank(coinbase);
-        registry.anchor(1, 100, keccak256("root1"), bytes32(0), 0);
+        registry.anchor(1, 100, keccak256("root1"), bytes32(0), 0, "");
         assertEq(registry.lastAnchoredEndBlock(), 100);
 
         // Second batch: blocks 101-200 (sequential)
         vm.prank(coinbase);
-        registry.anchor(101, 200, keccak256("root2"), bytes32(0), 0);
+        registry.anchor(101, 200, keccak256("root2"), bytes32(0), 0, "");
         assertEq(registry.lastAnchoredEndBlock(), 200);
 
         // Third batch: blocks 201-300 (sequential)
         vm.prank(coinbase);
-        registry.anchor(201, 300, keccak256("root3"), bytes32(0), 0);
+        registry.anchor(201, 300, keccak256("root3"), bytes32(0), 0, "");
         assertEq(registry.lastAnchoredEndBlock(), 300);
         assertEq(registry.batchCount(), 3);
     }
@@ -271,12 +272,12 @@ contract CopyrightRegistryTest is Test {
 
         // First batch: blocks 1-100
         vm.prank(coinbase);
-        registry.anchor(1, 100, keccak256("root1"), bytes32(0), 0);
+        registry.anchor(1, 100, keccak256("root1"), bytes32(0), 0, "");
 
         // Try to anchor non-sequential batch (should start at 101)
         vm.prank(coinbase);
         vm.expectRevert(CopyrightRegistry.BatchNotSequential.selector);
-        registry.anchor(102, 200, keccak256("root2"), bytes32(0), 0);
+        registry.anchor(102, 200, keccak256("root2"), bytes32(0), 0, "");
     }
 
     function test_Anchor_RevertInvalidBlockRange() public {
@@ -285,7 +286,7 @@ contract CopyrightRegistryTest is Test {
 
         vm.prank(coinbase);
         vm.expectRevert(CopyrightRegistry.InvalidBlockRange.selector);
-        registry.anchor(100, 1, keccak256("root"), bytes32(0), 0); // startBlock > endBlock
+        registry.anchor(100, 1, keccak256("root"), bytes32(0), 0, ""); // startBlock > endBlock
     }
 
     function test_Anchor_RevertNotCoinbase() public {
@@ -294,7 +295,7 @@ contract CopyrightRegistryTest is Test {
 
         vm.prank(user1);
         vm.expectRevert(CopyrightRegistry.OnlyCoinbase.selector);
-        registry.anchor(1, 100, keccak256("root"), bytes32(0), 0);
+        registry.anchor(1, 100, keccak256("root"), bytes32(0), 0, "");
     }
 
     function test_Anchor_RevertNotSystemTx() public {
@@ -303,7 +304,7 @@ contract CopyrightRegistryTest is Test {
 
         vm.prank(coinbase);
         vm.expectRevert(CopyrightRegistry.OnlySystemTx.selector);
-        registry.anchor(1, 100, keccak256("root"), bytes32(0), 0);
+        registry.anchor(1, 100, keccak256("root"), bytes32(0), 0, "");
     }
 
     // ============ Admin Tests ============
@@ -355,7 +356,8 @@ contract CopyrightRegistryTest is Test {
             uint64(block.number),
             keccak256(abi.encodePacked(sampleRuid)),
             keccak256("btc tx"),
-            1700000000
+            1700000000,
+            ""
         );
 
         // Verify batch
